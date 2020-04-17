@@ -1,7 +1,7 @@
 <template>
     <div>
         自动更新
-        <i-switch v-model="autoUpdate"></i-switch>
+        <mu-switch v-model="autoUpdate"></mu-switch>
         <div ref="mountNode"></div>
     </div>
 </template>
@@ -115,7 +115,7 @@ export default {
         graph.read(this.data); // 加载数据
         graph.fitView();
     },
-    deactivated() {
+    destroyed() {
         summaryES.close();
     }
 };

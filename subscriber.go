@@ -1,4 +1,4 @@
-package clusterplugin
+package cluster
 
 import (
 	"bufio"

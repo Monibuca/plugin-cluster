@@ -10,7 +10,7 @@
     "vue-template-compiler": "^2.6.11"
   },
   "scripts": {
-    "build": "vue-cli-service build --dest ui --target wc --name plugin-cluster index.vue"
+    "build": "vue-cli-service build --target lib --name plugin-cluster"
   },
   "author": "",
   "license": "ISC"

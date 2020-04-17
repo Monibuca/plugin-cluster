@@ -1,4 +1,4 @@
-package clusterplugin
+package cluster
 
 import (
 	"bufio"
@@ -7,8 +7,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"path"
-	"runtime"
 	"sync"
 	"time"
 
@@ -35,12 +33,10 @@ var (
 )
 
 func init() {
-	_, currentFilePath, _, _ := runtime.Caller(0)
 	InstallPlugin(&PluginConfig{
 		Name:   "Cluster",
 		Type:   PLUGIN_HOOK | PLUGIN_PUBLISHER | PLUGIN_SUBSCRIBER,
 		Config: &config,
-		UI:     path.Join(path.Dir(currentFilePath), "dashboard", "ui", "plugin-cluster.min.js"),
 		Run:    run,
 	})
 }
