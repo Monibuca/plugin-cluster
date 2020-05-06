@@ -1,0 +1,1 @@
+@-webkit-keyframes linena{0%{stroke-dashoffset:50}to{stroke-dashoffset:0}}@keyframes linena{0%{stroke-dashoffset:50}to{stroke-dashoffset:0}}.edge>path{-webkit-animation:linena 2s linear infinite;animation:linena 2s linear infinite;stroke-dasharray:10,10,5}

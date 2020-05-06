@@ -1,122 +1,63 @@
 <template>
-    <div>
-        自动更新
-        <mu-switch v-model="autoUpdate"></mu-switch>
-        <div ref="mountNode"></div>
-    </div>
+    <graphviz :value="value" />
 </template>
 
 <script>
-let summaryES = null;
-import G6 from "@antv/g6";
-var graph = null;
+import graphviz from "../components/graphviz"
 export default {
+    components:{
+        graphviz
+    },
     data() {
         return {
             autoUpdate: true,
-            data: {}
+            showSubscribers:true
         };
     },
-    methods: {
-        fetchSummary() {
-            summaryES = new EventSource("/api/summary");
-            summaryES.onmessage = evt => {
-                if (!evt.data) return;
-                let summary = JSON.parse(evt.data);
-                summary.Address = location.hostname;
-                if (!summary.Rooms) summary.Rooms = [];
-                summary.Rooms.sort((a, b) =>
-                    a.StreamPath > b.StreamPath ? 1 : -1
-                );
-                let d = this.addServer(summary);
-                d.label = "🏠" + d.label;
-                this.data = d;
-            };
-        },
-        addServer(node) {
-            let result = {
-                id: node.Address,
-                label: node.Address,
-                description: `cpu:${node.CPUUsage >> 0}% mem:${node.Memory
-                    .Usage >> 0}%`,
-                shape: "modelRect",
-                logoIcon: {
-                    show: false
-                },
-                children: []
-            };
-
-            if (node.Rooms) {
-                for (let i = 0; i < node.Rooms.length; i++) {
-                    let room = node.Rooms[i];
-                    let roomId = room.StreamPath;
-                    let roomData = {
-                        id: roomId,
-                        label: room.StreamPath,
-                        shape: "rect",
-                        children: []
-                    };
-                    result.children.push(roomData);
-                    if (room.SubscriberInfo) {
-                        for (let j = 0; j < room.SubscriberInfo.length; j++) {
-                            let subId = roomId + room.SubscriberInfo[j].ID;
-                            roomData.children.push({
-                                id: subId,
-                                label: room.SubscriberInfo[j].ID
-                            });
-                        }
-                    }
-                }
-            }
-            if (node.Children) {
-                for (let childId in node.Children) {
-                    result.children.push(
-                        this.addServer(node.Children[childId])
-                    );
-                }
-            }
-            return result;
-        }
-    },
-    watch: {
-        data(v) {
-            if (graph && this.autoUpdate) {
-                //graph.updateChild(v, "");
-                graph.changeData(v); // 加载数据
-                graph.fitView();
-                //graph.read(v);
+    computed:{
+        value(){
+            if(this.autoUpdate){
+                let state = this.$store.state
+                return `digraph G {
+                    bgcolor="transparent";
+                    node[shape=box color="cyan" fontcolor="#feeb73"];
+                    edge[color="#c52dd0"]
+                    current[shape=box3d label="${state.Address}\\ncpu:${state.CPUUsage >> 0}% mem:${state.Memory.Usage >> 0}%"]
+                    ${state.Streams.map(s=>'"'+s.StreamPath+'"[shape=folder'+(this.showSubscribers?'':' label="'+s.StreamPath+'('+s.SubscriberInfo.length+')"')+'];\ncurrent->"'+s.StreamPath+'"[arrowhead=tee]\n'+
+                    (this.showSubscribers?s.SubscriberInfo.map(sub=>`"${s.StreamPath}"->"${sub.ID}"`).join("\n"):"")).join("\n")}
+                    ${Object.keys(state.Children).map(c=>`"${c}"[shape=box3d]\ncurrent->"${c}"`).join("\n")}
+                }`
             }
         }
     },
     mounted() {
-        this.fetchSummary();
-        if (graph) return;
-        graph = new G6.TreeGraph({
-            linkCenter: true,
-            // renderer: "svg",
-            container: this.$refs.mountNode, // 指定挂载容器
-            width: 800, // 图的宽度
-            height: 500, // 图的高度
-            modes: {
-                default: [
-                    "drag-canvas",
-                    "zoom-canvas",
-                    "click-select",
-                    "drag-node"
-                ]
+        let _this = this;
+        this.$parent.titleOps = [
+            {
+                template:
+                    "<mu-switch label='自动更新' v-model='value'></mu-swtich>",
+                data() {
+                    return { value: _this.autoUpdate };
+                },
+                watch: {
+                    value(v) {
+                        _this.autoUpdate = v;
+                    }
+                }
             },
-            animate: false,
-            layout: {
-                // type: "indeted",
-                direction: "H"
+            {
+                template:
+                    "<mu-checkbox label='显示订阅者' v-model='value'></mu-checkbox>",
+                data() {
+                    return { value: _this.showSubscribers };
+                },
+                watch: {
+                    value(v) {
+                        _this.showSubscribers = v;
+                    }
+                }
             }
-        });
-        //graph.addChild(this.data, "");
-        graph.read(this.data); // 加载数据
-        graph.fitView();
-    },
-    destroyed() {
-        summaryES.close();
+        ];
     }
 };
 </script>

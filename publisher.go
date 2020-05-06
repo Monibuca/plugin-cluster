@@ -8,25 +8,25 @@ import (
 	"net"
 	"strings"
 
-	. "github.com/Monibuca/engine"
-	"github.com/Monibuca/engine/avformat"
-	"github.com/Monibuca/engine/pool"
+	. "github.com/Monibuca/engine/v2"
+	"github.com/Monibuca/engine/v2/avformat"
+	"github.com/Monibuca/engine/v2/pool"
 )
 
 type Receiver struct {
-	InputStream
+	Publisher
 	io.Reader
 	*bufio.Writer
 }
 
-func (p *Receiver) Auth(authSub *OutputStream) {
+func (p *Receiver) Auth(authSub *Subscriber) {
 	p.WriteByte(MSG_AUTH)
 	p.WriteString(authSub.ID + "," + authSub.Sign)
 	p.WriteByte(0)
 	p.Flush()
 }
 
-func (p *Receiver) readAVPacket(avType byte) (av *avformat.AVPacket, err error) {
+func (p *Receiver) readAVPacket(avType byte) (timestamp uint32, payload []byte, err error) {
 	buf := pool.GetSlice(4)
 	defer pool.RecycleSlice(buf)
 	_, err = io.ReadFull(p, buf)
@@ -34,14 +34,13 @@ func (p *Receiver) readAVPacket(avType byte) (av *avformat.AVPacket, err error) 
 		println(err.Error())
 		return
 	}
-	av = avformat.NewAVPacket(avType)
-	av.Timestamp = binary.BigEndian.Uint32(buf)
+	timestamp = binary.BigEndian.Uint32(buf)
 	_, err = io.ReadFull(p, buf)
 	if MayBeError(err) {
 		return
 	}
-	av.Payload = pool.GetSlice(int(binary.BigEndian.Uint32(buf)))
-	_, err = io.ReadFull(p, av.Payload)
+	payload = make([]byte, int(binary.BigEndian.Uint32(buf)))
+	_, err = io.ReadFull(p, payload)
 	MayBeError(err)
 	return
 }
@@ -60,7 +59,8 @@ func PullUpStream(streamPath string) {
 		Reader: brw.Reader,
 		Writer: brw.Writer,
 	}
-	if p.Publish(streamPath, p) {
+	if p.Publish(streamPath) {
+		p.Type = "Cluster"
 		p.WriteByte(MSG_SUBSCRIBE)
 		p.WriteString(streamPath)
 		p.WriteByte(0)
@@ -75,14 +75,12 @@ func PullUpStream(streamPath string) {
 	for cmd, err := brw.ReadByte(); !MayBeError(err); cmd, err = brw.ReadByte() {
 		switch cmd {
 		case MSG_AUDIO:
-			if audio, err := p.readAVPacket(avformat.FLV_TAG_TYPE_AUDIO); err == nil {
-				p.PushAudio(audio)
+			if t, payload, err := p.readAVPacket(avformat.FLV_TAG_TYPE_AUDIO); err == nil {
+				p.PushAudio(t, payload)
 			}
 		case MSG_VIDEO:
-			if video, err := p.readAVPacket(avformat.FLV_TAG_TYPE_VIDEO); err == nil && len(video.Payload) > 2 {
-				tmp := video.Payload[0]         // 第一个字节保存着视频的相关信息.
-				video.VideoFrameType = tmp >> 4 // 帧类型 4Bit, H264一般为1或者2
-				p.PushVideo(video)
+			if t, payload, err := p.readAVPacket(avformat.FLV_TAG_TYPE_VIDEO); err == nil && len(payload) > 2 {
+				p.PushVideo(t, payload)
 			}
 		case MSG_AUTH:
 			cmd, err = brw.ReadByte()

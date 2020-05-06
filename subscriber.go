@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Monibuca/engine/avformat"
+	"github.com/Monibuca/engine/v2/avformat"
 
-	. "github.com/Monibuca/engine"
-	"github.com/Monibuca/engine/pool"
+	. "github.com/Monibuca/engine/v2"
+	"github.com/Monibuca/engine/v2/pool"
 )
 
 func ListenBare(addr string) error {
@@ -55,17 +55,17 @@ func process(conn net.Conn) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	connAddr := conn.RemoteAddr().String()
-	stream := OutputStream{
-		SendHandler: func(p *avformat.SendPacket) error {
+	stream := Subscriber{
+		OnData: func(p *avformat.SendPacket) error {
 			head := pool.GetSlice(9)
-			head[0] = p.Packet.Type - 7
+			head[0] = p.Type - 7
 			binary.BigEndian.PutUint32(head[1:5], p.Timestamp)
-			binary.BigEndian.PutUint32(head[5:9], uint32(len(p.Packet.Payload)))
+			binary.BigEndian.PutUint32(head[5:9], uint32(len(p.Payload)))
 			if _, err := conn.Write(head); err != nil {
 				return err
 			}
 			pool.RecycleSlice(head)
-			if _, err := conn.Write(p.Packet.Payload); err != nil {
+			if _, err := conn.Write(p.Payload); err != nil {
 				return err
 			}
 			return nil
@@ -86,11 +86,11 @@ func process(conn net.Conn) {
 		bytes = bytes[0 : len(bytes)-1]
 		switch cmd {
 		case MSG_SUBSCRIBE:
-			if stream.Room != nil {
+			if stream.Stream != nil {
 				fmt.Printf("bare stream already exist from %s", conn.RemoteAddr())
 				return
 			}
-			go stream.Play(string(bytes))
+			go stream.Subscribe(string(bytes))
 		case MSG_AUTH:
 			sign := strings.Split(string(bytes), ",")
 			head := []byte{MSG_AUTH, 2}

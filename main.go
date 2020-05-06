@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/Monibuca/engine"
+	. "github.com/Monibuca/engine/v2"
 )
 
 const (
@@ -122,7 +122,7 @@ func onSummary(start bool) {
 	})
 }
 
-func onSubscribe(s *OutputStream) {
+func onSubscribe(s *Subscriber) {
 	if s.Publisher == nil {
 		go PullUpStream(s.StreamPath)
 	}
