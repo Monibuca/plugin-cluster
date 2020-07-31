@@ -24,11 +24,11 @@ const (
 )
 
 var (
-	config = struct {
+	config struct {
 		OriginServer string
 		ListenAddr   string
-	}{}
-	edges      = sync.Map{}
+	}
+	edges      sync.Map
 	masterConn *net.TCPConn
 )
 
