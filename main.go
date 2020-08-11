@@ -3,6 +3,7 @@ package cluster
 import (
 	"bufio"
 	"encoding/json"
+	"golang.org/x/sync/errgroup"
 	"io"
 	"log"
 	"math/rand"
@@ -41,6 +42,15 @@ func init() {
 	})
 }
 func run() {
+	var e errgroup.Group
+	if config.ListenAddr != "" {
+		Summary.Children = make(map[string]*ServerSummary)
+		OnSummaryHooks.AddHook(onSummary)
+		log.Printf("server bare start at %s", config.ListenAddr)
+		e.Go(func() error {
+			return ListenBare(config.ListenAddr)
+		})
+	}
 	if config.OriginServer != "" {
 		OnSubscribeHooks.AddHook(onSubscribe)
 		addr, err := net.ResolveTCPAddr("tcp", config.OriginServer)
@@ -49,12 +59,7 @@ func run() {
 		}
 		go readMaster(addr)
 	}
-	if config.ListenAddr != "" {
-		Summary.Children = make(map[string]*ServerSummary)
-		OnSummaryHooks.AddHook(onSummary)
-		log.Printf("server bare start at %s", config.ListenAddr)
-		log.Fatal(ListenBare(config.ListenAddr))
-	}
+	log.Fatal(e.Wait())
 }
 
 func readMaster(addr *net.TCPAddr) {
