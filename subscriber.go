@@ -74,10 +74,26 @@ func process(conn net.Conn) {
 			Type: "Bare",
 		},
 	}
+	var p Receiver
+	p.Reader = reader
+	defer p.Close()
 	for {
 		cmd, err := reader.ReadByte()
 		if err != nil {
 			return
+		}
+		if p.Stream != nil {
+			switch cmd {
+			case MSG_AUDIO:
+				if t, payload, err := p.readAVPacket(avformat.FLV_TAG_TYPE_AUDIO); err == nil {
+					p.PushAudio(t, payload)
+				}
+			case MSG_VIDEO:
+				if t, payload, err := p.readAVPacket(avformat.FLV_TAG_TYPE_VIDEO); err == nil && len(payload) > 2 {
+					p.PushVideo(t, payload)
+				}
+			}
+			continue
 		}
 		bytes, err := reader.ReadBytes(0)
 		if err != nil {
@@ -85,6 +101,10 @@ func process(conn net.Conn) {
 		}
 		bytes = bytes[0 : len(bytes)-1]
 		switch cmd {
+		case MSG_PUBLISH:
+			if p.Publish(string(bytes)) {
+				p.Type = "Bare"
+			}
 		case MSG_SUBSCRIBE:
 			if stream.Stream != nil {
 				fmt.Printf("bare stream already exist from %s", conn.RemoteAddr())

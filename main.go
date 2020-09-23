@@ -2,14 +2,18 @@ package cluster
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/json"
-	"golang.org/x/sync/errgroup"
 	"io"
 	"log"
 	"math/rand"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/Monibuca/engine/v2/avformat"
+	"github.com/Monibuca/engine/v2/pool"
+	"golang.org/x/sync/errgroup"
 
 	. "github.com/Monibuca/engine/v2"
 )
@@ -22,12 +26,14 @@ const (
 	MSG_AUTH
 	MSG_SUMMARY
 	MSG_LOG
+	MSG_PUBLISH
 )
 
 var (
 	config struct {
 		OriginServer string
 		ListenAddr   string
+		Push         bool //推送模式
 	}
 	edges      sync.Map
 	masterConn *net.TCPConn
@@ -52,18 +58,23 @@ func run() {
 		})
 	}
 	if config.OriginServer != "" {
-		OnSubscribeHooks.AddHook(onSubscribe)
+		if config.Push {
+			OnPublishHooks.AddHook(onPublish)
+		} else {
+			OnSubscribeHooks.AddHook(onSubscribe)
+		}
 		addr, err := net.ResolveTCPAddr("tcp", config.OriginServer)
 		if MayBeError(err) {
 			return
 		}
-		go readMaster(addr)
+		e.Go(func() error {
+			return readMaster(addr)
+		})
 	}
 	log.Fatal(e.Wait())
 }
 
-func readMaster(addr *net.TCPAddr) {
-	var err error
+func readMaster(addr *net.TCPAddr) (err error) {
 	var cmd byte
 	for {
 		if masterConn, err = net.DialTCP("tcp", nil, addr); !MayBeError(err) {
@@ -90,6 +101,7 @@ func readMaster(addr *net.TCPAddr) {
 		log.Printf("reconnect to OriginServer %s after %d seconds", config.OriginServer, t)
 		time.Sleep(time.Duration(t) * time.Second)
 	}
+	return
 }
 func report() {
 	if b, err := json.Marshal(Summary); err == nil {
@@ -130,5 +142,34 @@ func onSummary(start bool) {
 func onSubscribe(s *Subscriber) {
 	if s.Publisher == nil {
 		go PullUpStream(s.StreamPath)
+	}
+}
+func onPublish(s *Stream) {
+	if masterConn != nil {
+		w := bufio.NewWriter(masterConn)
+		w.WriteByte(MSG_PUBLISH)
+		w.WriteString(s.StreamPath)
+		w.WriteByte(0)
+		w.Flush()
+		stream := Subscriber{
+			OnData: func(p *avformat.SendPacket) error {
+				head := pool.GetSlice(9)
+				head[0] = p.Type - 7
+				binary.BigEndian.PutUint32(head[1:5], p.Timestamp)
+				binary.BigEndian.PutUint32(head[5:9], uint32(len(p.Payload)))
+				if _, err := w.Write(head); err != nil {
+					return err
+				}
+				pool.RecycleSlice(head)
+				if _, err := w.Write(p.Payload); err != nil {
+					return err
+				}
+				return nil
+			}, SubscriberInfo: SubscriberInfo{
+				ID:   config.OriginServer,
+				Type: "Bare",
+			},
+		}
+		go stream.Subscribe(s.StreamPath)
 	}
 }
