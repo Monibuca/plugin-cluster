@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"bufio"
+	"embed"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -39,12 +40,17 @@ var (
 	masterConn *net.TCPConn
 )
 
+//go:embed ui/*
+//go:embed README.md
+var ui embed.FS
+
 func init() {
 	InstallPlugin(&PluginConfig{
 		Name:   "Cluster",
 		Type:   PLUGIN_HOOK | PLUGIN_PUBLISHER | PLUGIN_SUBSCRIBER,
 		Config: &config,
 		Run:    run,
+		UIFile: &ui,
 	})
 }
 func run() {
