@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"bufio"
-	"embed"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -12,11 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Monibuca/engine/v2/avformat"
-	"github.com/Monibuca/engine/v2/pool"
+	. "github.com/Monibuca/utils/v3"
 	"golang.org/x/sync/errgroup"
-
-	. "github.com/Monibuca/engine/v2"
+	. "github.com/Monibuca/plugin-summary"
+	. "github.com/Monibuca/engine/v3"
 )
 
 const (
@@ -40,17 +38,11 @@ var (
 	masterConn *net.TCPConn
 )
 
-//go:embed ui/*
-//go:embed README.md
-var ui embed.FS
-
 func init() {
 	InstallPlugin(&PluginConfig{
 		Name:   "Cluster",
-		Type:   PLUGIN_HOOK | PLUGIN_PUBLISHER | PLUGIN_SUBSCRIBER,
 		Config: &config,
 		Run:    run,
-		UIFile: &ui,
 	})
 }
 func run() {
@@ -146,7 +138,7 @@ func onSummary(start bool) {
 }
 
 func onSubscribe(s *Subscriber) {
-	if s.Publisher == nil {
+	if s.Stream == nil {
 		go PullUpStream(s.StreamPath)
 	}
 }
