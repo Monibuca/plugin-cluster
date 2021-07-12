@@ -2,7 +2,8 @@ package cluster
 
 import (
 	"bufio"
-	"encoding/binary"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"log"
@@ -11,10 +12,11 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/Monibuca/utils/v3"
-	"golang.org/x/sync/errgroup"
-	. "github.com/Monibuca/plugin-summary"
 	. "github.com/Monibuca/engine/v3"
+	. "github.com/Monibuca/plugin-summary"
+	. "github.com/Monibuca/utils/v3"
+	"github.com/lucas-clemente/quic-go"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -26,6 +28,8 @@ const (
 	MSG_SUMMARY
 	MSG_LOG
 	MSG_PUBLISH
+	MSG_VIDEOTRACK
+	MSG_AUDIOTRACK
 )
 
 var (
@@ -35,9 +39,14 @@ var (
 		Push         bool //推送模式
 	}
 	edges      sync.Map
-	masterConn *net.TCPConn
+	masterConn quic.Stream
+	tlsCfg     = generateTLSConfig()
+	ctx        = context.Background()
 )
 
+func generateTLSConfig() *tls.Config {
+	return &tls.Config{}
+}
 func init() {
 	InstallPlugin(&PluginConfig{
 		Name:   "Cluster",
@@ -49,7 +58,7 @@ func run() {
 	var e errgroup.Group
 	if config.ListenAddr != "" {
 		Summary.Children = make(map[string]*ServerSummary)
-		OnSummaryHooks.AddHook(onSummary)
+		go AddHook("Summary", onSummary)
 		log.Printf("server bare start at %s", config.ListenAddr)
 		e.Go(func() error {
 			return ListenBare(config.ListenAddr)
@@ -57,25 +66,22 @@ func run() {
 	}
 	if config.OriginServer != "" {
 		if config.Push {
-			OnPublishHooks.AddHook(onPublish)
+			go AddHook(HOOK_PUBLISH, onPublish)
 		} else {
-			OnSubscribeHooks.AddHook(onSubscribe)
-		}
-		addr, err := net.ResolveTCPAddr("tcp", config.OriginServer)
-		if MayBeError(err) {
-			return
+			go AddHook(HOOK_SUBSCRIBE, onSubscribe)
 		}
 		e.Go(func() error {
-			return readMaster(addr)
+			return readMaster()
 		})
 	}
 	log.Fatal(e.Wait())
 }
 
-func readMaster(addr *net.TCPAddr) (err error) {
+func readMaster() (err error) {
 	var cmd byte
 	for {
-		if masterConn, err = net.DialTCP("tcp", nil, addr); !MayBeError(err) {
+		if sess, err := quic.DialAddr(config.OriginServer, tlsCfg, nil); !MayBeError(err) {
+			masterConn, err = sess.AcceptStream(ctx)
 			reader := bufio.NewReader(masterConn)
 			log.Printf("connect to master %s reporting", config.OriginServer)
 			for report(); err == nil; {
@@ -130,44 +136,49 @@ func orderReport(conn io.Writer, start bool) {
 }
 
 //通知从服务器需要上报或者关闭上报
-func onSummary(start bool) {
+func onSummary(v interface{}) {
+	start := v.(bool)
 	edges.Range(func(k, v interface{}) bool {
 		orderReport(v.(*net.TCPConn), start)
 		return true
 	})
 }
 
-func onSubscribe(s *Subscriber) {
-	if s.Stream == nil {
+func onSubscribe(v interface{}) {
+	if s := v.(*Subscriber); s.Stream == nil {
 		go PullUpStream(s.StreamPath)
 	}
 }
-func onPublish(s *Stream) {
-	if masterConn != nil {
+func onPublish(v interface{}) {
+	if s := v.(*Stream); masterConn != nil {
 		w := bufio.NewWriter(masterConn)
 		w.WriteByte(MSG_PUBLISH)
 		w.WriteString(s.StreamPath)
 		w.WriteByte(0)
 		w.Flush()
-		stream := Subscriber{
-			OnData: func(p *avformat.SendPacket) error {
-				head := pool.GetSlice(9)
-				head[0] = p.Type - 7
-				binary.BigEndian.PutUint32(head[1:5], p.Timestamp)
-				binary.BigEndian.PutUint32(head[5:9], uint32(len(p.Payload)))
-				if _, err := w.Write(head); err != nil {
-					return err
-				}
-				pool.RecycleSlice(head)
-				if _, err := w.Write(p.Payload); err != nil {
-					return err
-				}
-				return nil
-			}, SubscriberInfo: SubscriberInfo{
-				ID:   config.OriginServer,
-				Type: "Bare",
-			},
+		sub := Subscriber{
+			Type: "Bare",
+			ID:   config.OriginServer,
 		}
-		go stream.Subscribe(s.StreamPath)
+		// stream := Subscriber{
+		// OnData: func(p *avformat.SendPacket) error {
+		// 	head := pool.GetSlice(9)
+		// 	head[0] = p.Type - 7
+		// 	binary.BigEndian.PutUint32(head[1:5], p.Timestamp)
+		// 	binary.BigEndian.PutUint32(head[5:9], uint32(len(p.Payload)))
+		// 	if _, err := w.Write(head); err != nil {
+		// 		return err
+		// 	}
+		// 	pool.RecycleSlice(head)
+		// 	if _, err := w.Write(p.Payload); err != nil {
+		// 		return err
+		// 	}
+		// 	return nil
+		// }, SubscriberInfo: SubscriberInfo{
+		// 	ID:   config.OriginServer,
+		// 	Type: "Bare",
+		// },
+		// }
+		sub.Subscribe(s.StreamPath)
 	}
 }

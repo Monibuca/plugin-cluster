@@ -5,11 +5,11 @@ import (
 	"encoding/binary"
 	"io"
 	"log"
-	"net"
-	"strings"
 
 	. "github.com/Monibuca/engine/v3"
 	. "github.com/Monibuca/utils/v3"
+	. "github.com/Monibuca/utils/v3/codec"
+	"github.com/lucas-clemente/quic-go"
 )
 
 type Receiver struct {
@@ -18,16 +18,16 @@ type Receiver struct {
 	*bufio.Writer
 }
 
-func (p *Receiver) Auth(authSub *Subscriber) {
-	p.WriteByte(MSG_AUTH)
-	p.WriteString(authSub.ID + "," + authSub.Sign)
-	p.WriteByte(0)
-	p.Flush()
-}
+// func (p *Receiver) Auth(authSub *Subscriber) {
+// 	p.WriteByte(MSG_AUTH)
+// 	p.WriteString(authSub.ID + "," + authSub.Sign)
+// 	p.WriteByte(0)
+// 	p.Flush()
+// }
 
 func (p *Receiver) readAVPacket(avType byte) (timestamp uint32, payload []byte, err error) {
-	buf := pool.GetSlice(4)
-	defer pool.RecycleSlice(buf)
+	buf := GetSlice(4)
+	defer RecycleSlice(buf)
 	_, err = io.ReadFull(p, buf)
 	if err != nil {
 		println(err.Error())
@@ -45,57 +45,67 @@ func (p *Receiver) readAVPacket(avType byte) (timestamp uint32, payload []byte, 
 }
 
 func PullUpStream(streamPath string) {
-	addr, err := net.ResolveTCPAddr("tcp", config.OriginServer)
+	sess, err := quic.DialAddr(config.OriginServer, tlsCfg, nil)
 	if MayBeError(err) {
 		return
 	}
-	conn, err := net.DialTCP("tcp", nil, addr)
-	if MayBeError(err) {
-		return
-	}
+	conn, err := sess.AcceptStream(ctx)
 	brw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	p := &Receiver{
-		Reader: brw.Reader,
-		Writer: brw.Writer,
+		&Stream{
+			StreamPath: streamPath,
+		},
+		brw.Reader,
+		brw.Writer,
 	}
-	if p.Publish(streamPath) {
+	if p.Publish() {
 		p.Type = "Cluster"
 		p.WriteByte(MSG_SUBSCRIBE)
 		p.WriteString(streamPath)
 		p.WriteByte(0)
 		p.Flush()
-		for _, v := range p.Subscribers {
-			p.Auth(v)
-		}
+		// for _, v := range p.Subscribers {
+		// 	p.Auth(v)
+		// }
 	} else {
 		return
 	}
-	defer p.Cancel()
+	defer p.Close()
 	for cmd, err := brw.ReadByte(); !MayBeError(err); cmd, err = brw.ReadByte() {
 		switch cmd {
 		case MSG_AUDIO:
-			if t, payload, err := p.readAVPacket(avformat.FLV_TAG_TYPE_AUDIO); err == nil {
-				p.PushAudio(t, payload)
+			name, err := brw.ReadString(0)
+			if MayBeError(err) {
+				return
+			}
+			at := p.WaitAudioTrack(name)
+			if t, payload, err := p.readAVPacket(FLV_TAG_TYPE_AUDIO); err == nil {
+				at.PushByteStream(t, payload)
 			}
 		case MSG_VIDEO:
-			if t, payload, err := p.readAVPacket(avformat.FLV_TAG_TYPE_VIDEO); err == nil && len(payload) > 2 {
-				p.PushVideo(t, payload)
-			}
-		case MSG_AUTH:
-			cmd, err = brw.ReadByte()
+			name, err := brw.ReadString(0)
 			if MayBeError(err) {
 				return
 			}
-			bytes, err := brw.ReadBytes(0)
-			if MayBeError(err) {
-				return
+			vt := p.WaitVideoTrack(name)
+			if t, payload, err := p.readAVPacket(FLV_TAG_TYPE_VIDEO); err == nil && len(payload) > 2 {
+				vt.PushByteStream(t, payload)
 			}
-			subId := strings.Split(string(bytes[0:len(bytes)-1]), ",")[0]
-			if v, ok := p.Subscribers[subId]; ok {
-				if cmd != 1 {
-					v.Cancel()
-				}
-			}
+		// case MSG_AUTH:
+		// 	cmd, err = brw.ReadByte()
+		// 	if MayBeError(err) {
+		// 		return
+		// 	}
+		// 	bytes, err := brw.ReadBytes(0)
+		// 	if MayBeError(err) {
+		// 		return
+		// 	}
+		// 	subId := strings.Split(string(bytes[0:len(bytes)-1]), ",")[0]
+		// 	if v, ok := p.Subscribers[subId]; ok {
+		// 		if cmd != 1 {
+		// 			v.Cancel()
+		// 		}
+		// 	}
 		default:
 			log.Printf("unknown cmd:%v", cmd)
 		}

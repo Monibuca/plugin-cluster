@@ -2,79 +2,64 @@ package cluster
 
 import (
 	"bufio"
-	"encoding/binary"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
-	"strconv"
-	"strings"
-	"time"
-
 
 	. "github.com/Monibuca/engine/v3"
+	. "github.com/Monibuca/plugin-summary"
 	. "github.com/Monibuca/utils/v3"
+	"github.com/Monibuca/utils/v3/codec"
+	quic "github.com/lucas-clemente/quic-go"
 )
 
 func ListenBare(addr string) error {
-	listener, err := net.Listen("tcp", addr)
+	listener, err := quic.ListenAddr(addr,tlsCfg, nil)
 	if MayBeError(err) {
 		return err
 	}
-	var tempDelay time.Duration
-
+	ctx := context.Background()
 	for {
-		conn, err := listener.Accept()
-		println(conn.RemoteAddr().String())
+		sess, err := listener.Accept(ctx)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				if tempDelay == 0 {
-					tempDelay = 5 * time.Millisecond
-				} else {
-					tempDelay *= 2
-				}
-				if max := 1 * time.Second; tempDelay > max {
-					tempDelay = max
-				}
-				println("bare: Accept error: " + err.Error() + "; retrying in " + strconv.FormatFloat(tempDelay.Seconds(), 'f', 2, 64))
-				// fmt.Printf("bare: Accept error: %v; retrying in %v", err, tempDelay)
-				time.Sleep(tempDelay)
-				continue
-			}
 			return err
 		}
-
-		tempDelay = 0
-
-		go process(conn)
+		stream, err := sess.AcceptStream(ctx)
+		if err != nil {
+			panic(err)
+		}
+		go process(sess, stream)
 	}
 }
 
-func process(conn net.Conn) {
-	defer conn.Close()
-	reader := bufio.NewReader(conn)
-	connAddr := conn.RemoteAddr().String()
-	stream := Subscriber{
-		OnData: func(p *avformat.SendPacket) error {
-			head := pool.GetSlice(9)
-			head[0] = p.Type - 7
-			binary.BigEndian.PutUint32(head[1:5], p.Timestamp)
-			binary.BigEndian.PutUint32(head[5:9], uint32(len(p.Payload)))
-			if _, err := conn.Write(head); err != nil {
-				return err
-			}
-			pool.RecycleSlice(head)
-			if _, err := conn.Write(p.Payload); err != nil {
-				return err
-			}
-			return nil
-		}, SubscriberInfo: SubscriberInfo{
-			ID:   connAddr,
-			Type: "Bare",
-		},
+func process(session quic.Session, stream quic.Stream) {
+	defer stream.Close()
+	reader := bufio.NewReader(stream)
+	subscriber := Subscriber{
+		ID:   fmt.Sprintf("%d", stream.StreamID()),
+		Type: "Cluster",
+		// OnAudio: func (pack AudioPack)  {
+
+		// },
+		// OnVideo: func(pack VideoPack) {
+		// 	head := pool.GetSlice(9)
+		// 	head[0] = p.Type - 7
+		// 	binary.BigEndian.PutUint32(head[1:5], p.Timestamp)
+		// 	binary.BigEndian.PutUint32(head[5:9], uint32(len(p.Payload)))
+		// 	if _, err := conn.Write(head); err != nil {
+		// 		return err
+		// 	}
+		// 	pool.RecycleSlice(head)
+		// 	if _, err := conn.Write(p.Payload); err != nil {
+		// 		return err
+		// 	}
+		// 	return nil
+		// },
 	}
 	var p Receiver
 	p.Reader = reader
+	connAddr := session.RemoteAddr().String()
 	defer p.Close()
 	for {
 		cmd, err := reader.ReadByte()
@@ -84,12 +69,22 @@ func process(conn net.Conn) {
 		if p.Stream != nil {
 			switch cmd {
 			case MSG_AUDIO:
-				if t, payload, err := p.readAVPacket(avformat.FLV_TAG_TYPE_AUDIO); err == nil {
-					p.PushAudio(t, payload)
+				name, err := reader.ReadString(0)
+				if err != nil {
+					return
+				}
+				at := p.WaitAudioTrack(name)
+				if t, payload, err := p.readAVPacket(codec.FLV_TAG_TYPE_AUDIO); err == nil {
+					at.PushByteStream(t, payload)
 				}
 			case MSG_VIDEO:
-				if t, payload, err := p.readAVPacket(avformat.FLV_TAG_TYPE_VIDEO); err == nil && len(payload) > 2 {
-					p.PushVideo(t, payload)
+				name, err := reader.ReadString(0)
+				if err != nil {
+					return
+				}
+				vt := p.WaitVideoTrack(name)
+				if t, payload, err := p.readAVPacket(codec.FLV_TAG_TYPE_VIDEO); err == nil && len(payload) > 2 {
+					vt.PushByteStream(t, payload)
 				}
 			}
 			continue
@@ -101,38 +96,59 @@ func process(conn net.Conn) {
 		bytes = bytes[0 : len(bytes)-1]
 		switch cmd {
 		case MSG_PUBLISH:
-			if p.Publish(string(bytes)) {
-				p.Type = "Bare"
+			p.Stream = &Stream{
+				StreamPath: string(bytes),
+				Type:       "Cluster",
 			}
+			p.Publish()
+		case MSG_VIDEOTRACK:
+			name, err := reader.ReadString(0)
+			if err != nil {
+				Println(err)
+			}
+			vt := p.NewVideoTrack(0)
+			vt.CodecID, err = reader.ReadByte()
+			p.VideoTracks.AddTrack(name, vt)
+		case MSG_AUDIOTRACK:
+			name, err := reader.ReadString(0)
+			if err != nil {
+				Println(err)
+			}
+			at := p.NewAudioTrack(0)
+			at.CodecID, err = reader.ReadByte()
+			p.AudioTracks.AddTrack(name, at)
 		case MSG_SUBSCRIBE:
-			if stream.Stream != nil {
-				fmt.Printf("bare stream already exist from %s", conn.RemoteAddr())
+			if subscriber.Stream != nil {
+				Printf("bare stream already exist from %s", session.RemoteAddr())
 				return
 			}
-			go stream.Subscribe(string(bytes))
-		case MSG_AUTH:
-			sign := strings.Split(string(bytes), ",")
-			head := []byte{MSG_AUTH, 2}
-			if len(sign) > 1 && AuthHooks.Trigger(sign[1]) == nil {
-				head[1] = 1
+			if err = subscriber.Subscribe(string(bytes)); err == nil {
+
 			}
-			conn.Write(head)
-			conn.Write(bytes[0 : len(bytes)+1])
+
+		// case MSG_AUTH:
+		// 	sign := strings.Split(string(bytes), ",")
+		// 	head := []byte{MSG_AUTH, 2}
+		// 	if len(sign) > 1 && AuthHooks.Trigger(sign[1]) == nil {
+		// 		head[1] = 1
+		// 	}
+		// 	conn.Write(head)
+		// 	conn.Write(bytes[0 : len(bytes)+1])
 		case MSG_SUMMARY: //收到从服务器发来报告，加入摘要中
 			summary := &ServerSummary{}
 			if err = json.Unmarshal(bytes, summary); err == nil {
 				summary.Address = connAddr
 				Summary.Report(summary)
 				if _, ok := edges.Load(connAddr); !ok {
-					edges.Store(connAddr, conn)
+					edges.Store(connAddr, stream)
 					if Summary.Running() {
-						orderReport(io.Writer(conn), true)
+						orderReport(io.Writer(stream), true)
 					}
 					defer edges.Delete(connAddr)
 				}
 			}
 		default:
-			fmt.Printf("bare receive unknown cmd:%d from %s", cmd, conn.RemoteAddr())
+			fmt.Printf("bare receive unknown cmd:%d from %s", cmd, connAddr)
 			return
 		}
 	}
