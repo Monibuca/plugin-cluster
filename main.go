@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"math/rand"
-	"net"
 	"sync"
 	"time"
 
@@ -24,25 +23,33 @@ const (
 	MSG_AUDIO
 	MSG_VIDEO
 	MSG_SUBSCRIBE
+	MSG_UNSUBSCRIBE
 	MSG_AUTH
 	MSG_SUMMARY
 	MSG_LOG
 	MSG_PUBLISH
 	MSG_VIDEOTRACK
 	MSG_AUDIOTRACK
+
+	STREAMTYPE_ORIGIN = "ClusterOrigin" //源流
+	STREAMTYPE_SINK   = "ClusterSink"   //下级流
 )
 
 var (
 	config struct {
 		OriginServer string
 		ListenAddr   string
-		Push         bool //推送模式
 	}
 	edges      sync.Map
 	masterConn quic.Stream
+	masterWriter *bufio.Writer
 	tlsCfg     = generateTLSConfig()
 	ctx        = context.Background()
 )
+
+type OriginStream struct {
+	hasSubscriber bool //是否含有订阅者
+}
 
 func generateTLSConfig() *tls.Config {
 	return &tls.Config{}
@@ -56,45 +63,56 @@ func init() {
 }
 func run() {
 	var e errgroup.Group
+	hooks := map[string]func(interface{}){HOOK_PUBLISH: onPublish}
 	if config.ListenAddr != "" {
 		Summary.Children = make(map[string]*ServerSummary)
-		go AddHook("Summary", onSummary)
-		log.Printf("server bare start at %s", config.ListenAddr)
-		e.Go(func() error {
-			return ListenBare(config.ListenAddr)
-		})
+		hooks["Summary"] = onSummary
+		e.Go(ListenBare)
 	}
 	if config.OriginServer != "" {
-		if config.Push {
-			go AddHook(HOOK_PUBLISH, onPublish)
-		} else {
-			go AddHook(HOOK_SUBSCRIBE, onSubscribe)
-		}
-		e.Go(func() error {
-			return readMaster()
-		})
+		hooks[HOOK_SUBSCRIBE] = onSubscribe
+		hooks[HOOK_UNSUBSCRIBE] = onUnsubscribe
+		e.Go(readMaster)
 	}
+	AddHooks(hooks)
 	log.Fatal(e.Wait())
 }
 
+// 读取源服务器信息
 func readMaster() (err error) {
 	var cmd byte
+	var sess quic.Session
 	for {
-		if sess, err := quic.DialAddr(config.OriginServer, tlsCfg, nil); !MayBeError(err) {
+		if sess, err = quic.DialAddr(config.OriginServer, tlsCfg, nil); !MayBeError(err) {
 			masterConn, err = sess.AcceptStream(ctx)
+			masterWriter = bufio.NewWriter(masterConn)
 			reader := bufio.NewReader(masterConn)
-			log.Printf("connect to master %s reporting", config.OriginServer)
+			Printf("connect to master %s reporting", config.OriginServer)
 			for report(); err == nil; {
 				if cmd, err = reader.ReadByte(); !MayBeError(err) {
 					switch cmd {
-					case MSG_SUMMARY: //收到主服务器指令，进行采集和上报
-						log.Println("receive summary request from OriginServer")
+					case MSG_SUMMARY: //收到源服务器指令，进行采集和上报
 						if cmd, err = reader.ReadByte(); !MayBeError(err) {
 							if cmd == 1 {
+								Printf("receive summary request from %s", config.OriginServer)
 								Summary.Add()
 								go onReport()
 							} else {
+								Printf("receive stop summary request from %s", config.OriginServer)
 								Summary.Done()
+							}
+						}
+					case MSG_PUBLISH: //收到源服务器的发布流信号，创建对应的流，准备接收数据
+						if streamPath, err := reader.ReadString(0); err == nil {
+							if s := FindStream(streamPath); s == nil {
+								os := &Stream{
+									StreamPath: streamPath,
+									Type:       STREAMTYPE_ORIGIN,
+									ExtraProp:  new(OriginStream),
+								}
+								os.Publish()
+							} else if s.Type == STREAMTYPE_ORIGIN {
+								s.Update()
 							}
 						}
 					}
@@ -102,10 +120,9 @@ func readMaster() (err error) {
 			}
 		}
 		t := 5 + rand.Int63n(5)
-		log.Printf("reconnect to OriginServer %s after %d seconds", config.OriginServer, t)
+		Printf("reconnect to OriginServer %s after %d seconds", config.OriginServer, t)
 		time.Sleep(time.Duration(t) * time.Second)
 	}
-	return
 }
 func report() {
 	if b, err := json.Marshal(Summary); err == nil {
@@ -119,12 +136,8 @@ func report() {
 
 //定时上报
 func onReport() {
-	for range time.NewTicker(time.Second).C {
-		if Summary.Running() {
-			report()
-		} else {
-			return
-		}
+	for c := time.NewTicker(time.Second).C; Summary.Running(); <-c {
+		report()
 	}
 }
 func orderReport(conn io.Writer, start bool) {
@@ -139,19 +152,39 @@ func orderReport(conn io.Writer, start bool) {
 func onSummary(v interface{}) {
 	start := v.(bool)
 	edges.Range(func(k, v interface{}) bool {
-		orderReport(v.(*net.TCPConn), start)
+		orderReport(v.(io.Writer), start)
 		return true
 	})
 }
 
 func onSubscribe(v interface{}) {
-	if s := v.(*Subscriber); s.Stream == nil {
-		go PullUpStream(s.StreamPath)
+	if s := v.(*Subscriber); s.Stream.Type == STREAMTYPE_ORIGIN {
+		o := s.Stream.ExtraProp.(*OriginStream)
+		if !o.hasSubscriber && masterConn != nil {
+			w := masterWriter
+			w.WriteByte(MSG_SUBSCRIBE)
+			w.WriteString(s.Stream.StreamPath)
+			w.WriteByte(0)
+			w.Flush()
+		}
+		//go PullUpStream(s.StreamPath)
+	}
+}
+func onUnsubscribe(v interface{}) {
+	if s := v.(*Subscriber); s.Stream.Type == STREAMTYPE_ORIGIN {
+		o := s.Stream.ExtraProp.(*OriginStream)
+		if o.hasSubscriber && len(s.Stream.Subscribers) == 0 && masterConn != nil {
+			w := masterWriter
+			w.WriteByte(MSG_UNSUBSCRIBE)
+			w.WriteString(s.Stream.StreamPath)
+			w.WriteByte(0)
+			w.Flush()
+		}
 	}
 }
 func onPublish(v interface{}) {
 	if s := v.(*Stream); masterConn != nil {
-		w := bufio.NewWriter(masterConn)
+		w := masterWriter
 		w.WriteByte(MSG_PUBLISH)
 		w.WriteString(s.StreamPath)
 		w.WriteByte(0)

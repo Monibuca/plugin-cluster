@@ -2,10 +2,8 @@ package cluster
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 
 	. "github.com/Monibuca/engine/v3"
 	. "github.com/Monibuca/plugin-summary"
@@ -14,20 +12,20 @@ import (
 	quic "github.com/lucas-clemente/quic-go"
 )
 
-func ListenBare(addr string) error {
-	listener, err := quic.ListenAddr(addr,tlsCfg, nil)
+func ListenBare() error {
+	listener, err := quic.ListenAddr(config.ListenAddr, tlsCfg, nil)
 	if MayBeError(err) {
 		return err
 	}
-	ctx := context.Background()
+	Printf("server bare start at %s", config.ListenAddr)
 	for {
 		sess, err := listener.Accept(ctx)
-		if err != nil {
+		if MayBeError(err) {
 			return err
 		}
 		stream, err := sess.AcceptStream(ctx)
-		if err != nil {
-			panic(err)
+		if MayBeError(err) {
+			return err
 		}
 		go process(sess, stream)
 	}
@@ -66,6 +64,7 @@ func process(session quic.Session, stream quic.Stream) {
 		if err != nil {
 			return
 		}
+		// 通过推模式过来的数据
 		if p.Stream != nil {
 			switch cmd {
 			case MSG_AUDIO:
@@ -95,6 +94,7 @@ func process(session quic.Session, stream quic.Stream) {
 		}
 		bytes = bytes[0 : len(bytes)-1]
 		switch cmd {
+		// 从服务器通过推模式，向主服务器推送
 		case MSG_PUBLISH:
 			p.Stream = &Stream{
 				StreamPath: string(bytes),
@@ -108,15 +108,22 @@ func process(session quic.Session, stream quic.Stream) {
 			}
 			vt := p.NewVideoTrack(0)
 			vt.CodecID, err = reader.ReadByte()
+			if MayBeError(err) {
+				return
+			}
 			p.VideoTracks.AddTrack(name, vt)
 		case MSG_AUDIOTRACK:
 			name, err := reader.ReadString(0)
-			if err != nil {
-				Println(err)
+			if MayBeError(err) {
+				return
 			}
 			at := p.NewAudioTrack(0)
 			at.CodecID, err = reader.ReadByte()
+			if MayBeError(err) {
+				return
+			}
 			p.AudioTracks.AddTrack(name, at)
+			// 拉模式，从服务器向主服务器订阅
 		case MSG_SUBSCRIBE:
 			if subscriber.Stream != nil {
 				Printf("bare stream already exist from %s", session.RemoteAddr())
@@ -124,6 +131,9 @@ func process(session quic.Session, stream quic.Stream) {
 			}
 			if err = subscriber.Subscribe(string(bytes)); err == nil {
 
+			}
+			if MayBeError(err) {
+				return
 			}
 
 		// case MSG_AUTH:
@@ -140,9 +150,8 @@ func process(session quic.Session, stream quic.Stream) {
 				summary.Address = connAddr
 				Summary.Report(summary)
 				if _, ok := edges.Load(connAddr); !ok {
-					edges.Store(connAddr, stream)
-					if Summary.Running() {
-						orderReport(io.Writer(stream), true)
+					if edges.Store(connAddr, stream); Summary.Running() {
+						orderReport(stream, true)
 					}
 					defer edges.Delete(connAddr)
 				}

@@ -14,6 +14,8 @@ github.com/Monibuca/engine/v2 v2.4.1/go.mod h1:LBuAJFcTtUjVsGKWcUKQpIftRECf7Ii9D
 github.com/Monibuca/engine/v3 v3.1.1/go.mod h1:yz6cssED2VlYu+g/LrxseBB9pcvsLM/o2QXa4gVY650=
 github.com/Monibuca/engine/v3 v3.1.3 h1:XoSYoh20cI+vV3T/708vcA3r/34a6Tq7FNDpHt5oHLY=
 github.com/Monibuca/engine/v3 v3.1.3/go.mod h1:yz6cssED2VlYu+g/LrxseBB9pcvsLM/o2QXa4gVY650=
+github.com/Monibuca/engine/v3 v3.1.5 h1:UYb0LYilZ3j5LyNwSTHiRU6DZr3+wUcxCNskCEXjqM4=
+github.com/Monibuca/engine/v3 v3.1.5/go.mod h1:yz6cssED2VlYu+g/LrxseBB9pcvsLM/o2QXa4gVY650=
 github.com/Monibuca/plugin-summary v0.0.0-20210710132803-53cdcef14699 h1:XV+JSOS+iyJsnB+sTDWtxhIetOCa8fLOVFC2r3KcvoU=
 github.com/Monibuca/plugin-summary v0.0.0-20210710132803-53cdcef14699/go.mod h1:1kiDXMF82y299q2+KKEeaKRpQFvVkiGAIGg8OhYk9Qk=
 github.com/Monibuca/utils/v3 v3.0.0 h1:i8qCXQPQpRPgjuXKu5C2PYiL5LYzB6GW4xE162mB2ug=

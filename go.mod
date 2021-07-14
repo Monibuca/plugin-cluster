@@ -3,7 +3,7 @@ module github.com/Monibuca/plugin-cluster/v3
 go 1.16
 
 require (
-	github.com/Monibuca/engine/v3 v3.1.3
+	github.com/Monibuca/engine/v3 v3.1.5
 	github.com/Monibuca/plugin-summary v0.0.0-20210710132803-53cdcef14699
 	github.com/Monibuca/utils/v3 v3.0.0
 	github.com/lucas-clemente/quic-go v0.21.1
