@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	_ "embed"
+
 	. "github.com/Monibuca/engine/v3"
 	. "github.com/Monibuca/plugin-summary"
 	. "github.com/Monibuca/utils/v3"
@@ -44,13 +46,35 @@ var (
 	tlsCfg = generateTLSConfig()
 	ctx    = context.Background()
 	origin Cluster
+
+	//go:embed keyPEM
+	keyPEM []byte
+
+	//go:embed certPEM
+	certPEM []byte
 )
 
-type OriginStream struct {
-}
-
 func generateTLSConfig() *tls.Config {
-	return &tls.Config{}
+	// key, err := rsa.GenerateKey(crand.Reader, 1024)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// template := x509.Certificate{SerialNumber: big.NewInt(1)}
+	// certDER, err := x509.CreateCertificate(crand.Reader, &template, &template, &key.PublicKey, key)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	// certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		panic(err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		NextProtos:   []string{"monibuca"},
+	}
 }
 func init() {
 	InstallPlugin(&PluginConfig{
@@ -108,7 +132,7 @@ func readMaster() (err error) {
 								os := &Stream{
 									StreamPath: streamPath,
 									Type:       STREAMTYPE_ORIGIN,
-									ExtraProp:  new(OriginStream),
+									ExtraProp:  &origin,
 								}
 								os.Publish()
 							} else if s.Type == STREAMTYPE_ORIGIN {
@@ -242,14 +266,14 @@ func onPublish(s *Stream) {
 			vt := t.(*VideoTrack)
 			origin.WriteVT(s.StreamPath, name, vt)
 			go vt.Play(nil, func(vp VideoPack) {
-				origin.WriteVideoPack(s.StreamPath,name, vp)
+				origin.WriteVideoPack(s.StreamPath, name, vp)
 			})
 		})
 		go s.AudioTracks.OnTrack(func(name string, t Track) {
 			at := t.(*AudioTrack)
 			origin.WriteAT(s.StreamPath, name, at)
 			go at.Play(nil, func(ap AudioPack) {
-				origin.WriteAudioPack(s.StreamPath,name, ap)
+				origin.WriteAudioPack(s.StreamPath, name, ap)
 			})
 		})
 	}
