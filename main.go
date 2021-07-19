@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"log"
 	"math/rand"
 	"sync"
@@ -21,6 +20,7 @@ import (
 
 const (
 	_ byte = iota
+	MSG_PULSE
 	MSG_AUDIO
 	MSG_VIDEO
 	MSG_SUBSCRIBE
@@ -73,7 +73,7 @@ func generateTLSConfig() *tls.Config {
 	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
-		NextProtos:   []string{"monibuca"},
+		NextProtos:   []string{"Monibuca"},
 	}
 }
 func init() {
@@ -104,24 +104,34 @@ func run() {
 func readMaster() (err error) {
 	var cmd byte
 	var sess quic.Session
+	var masterConn quic.Stream
 	for {
-		if sess, err = quic.DialAddr(config.OriginServer, tlsCfg, nil); !MayBeError(err) {
-			var masterConn quic.Stream
-			masterConn, err = sess.AcceptStream(ctx)
+		if sess, err = quic.DialAddr(config.OriginServer, &tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"Monibuca"},
+		}, nil); !MayBeError(err) {
+			masterConn, err = sess.OpenStreamSync(context.Background())
 			origin.Reader = bufio.NewReader(masterConn)
 			origin.Writer = bufio.NewWriter(masterConn)
 			origin.tracks = make(map[string]map[string]Track)
 			Printf("connect to master %s reporting", config.OriginServer)
-			for report(); err == nil; {
+			for origin.WriteReport(); err == nil; {
 				if cmd, err = origin.ReadByte(); !MayBeError(err) {
 					switch cmd {
+					case MSG_PULSE:
+						time.AfterFunc(time.Second, origin.WritePulse)
 					case MSG_SUMMARY: //收到源服务器指令，进行采集和上报
 						if cmd, err = origin.ReadByte(); !MayBeError(err) {
-							if cmd == 1 {
+							switch cmd {
+							case 1:
 								Printf("receive summary request from %s", config.OriginServer)
 								Summary.Add()
-								go onReport()
-							} else {
+								go func() {
+									for c := time.NewTicker(time.Second).C; Summary.Running(); <-c {
+										origin.WriteReport()
+									}
+								}()
+							case 2:
 								Printf("receive stop summary request from %s", config.OriginServer)
 								Summary.Done()
 							}
@@ -162,22 +172,6 @@ func readMaster() (err error) {
 		time.Sleep(time.Duration(t) * time.Second)
 	}
 }
-func report() {
-	if b, err := json.Marshal(Summary); err == nil {
-		data := make([]byte, len(b)+2)
-		data[0] = MSG_SUMMARY
-		copy(data[1:], b)
-		data[len(data)-1] = 0
-		_, err = origin.Write(data)
-	}
-}
-
-//定时上报
-func onReport() {
-	for c := time.NewTicker(time.Second).C; Summary.Running(); <-c {
-		report()
-	}
-}
 
 func broadcast(do func(*Cluster)) {
 	edges.Range(func(k, v interface{}) bool {
@@ -189,7 +183,11 @@ func broadcast(do func(*Cluster)) {
 //通知从服务器需要上报或者关闭上报
 func onSummary(start bool) {
 	broadcast(func(c *Cluster) {
-		c.orderReport(start)
+		if start {
+			c.WriteSummary(1)
+		} else {
+			c.WriteSummary(2)
+		}
 	})
 }
 

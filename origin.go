@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	. "github.com/Monibuca/engine/v3"
 	. "github.com/Monibuca/plugin-summary"
@@ -21,11 +22,11 @@ func ListenBare() error {
 	for {
 		sess, err := listener.Accept(ctx)
 		if MayBeError(err) {
-			return err
+			continue
 		}
 		stream, err := sess.AcceptStream(ctx)
 		if MayBeError(err) {
-			return err
+			continue
 		}
 		go process(sess, stream)
 	}
@@ -38,8 +39,10 @@ func process(session quic.Session, stream quic.Stream) {
 	var o Cluster
 	o.tracks = make(map[string]map[string]Track)
 	o.Reader = reader
+	o.Writer = bufio.NewWriter(stream)
 	connAddr := session.RemoteAddr().String()
 	subscribers := make(map[string]context.CancelFunc)
+	o.WritePulse()
 	for {
 		cmd, err := reader.ReadByte()
 		if err != nil {
@@ -106,11 +109,13 @@ func process(session quic.Session, stream quic.Stream) {
 				Summary.Report(summary)
 				if _, ok := edges.Load(connAddr); !ok {
 					if edges.Store(connAddr, &o); Summary.Running() {
-						o.orderReport(true)
+						o.WriteSummary(1)
 					}
 					defer edges.Delete(connAddr)
 				}
 			}
+		case MSG_PULSE:
+			time.AfterFunc(time.Second, o.WritePulse)
 		default:
 			fmt.Printf("bare receive unknown cmd:%d from %s", cmd, connAddr)
 			return

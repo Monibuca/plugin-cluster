@@ -2,10 +2,12 @@ package cluster
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"sync"
 
 	. "github.com/Monibuca/engine/v3"
+	. "github.com/Monibuca/plugin-summary"
 	. "github.com/Monibuca/utils/v3"
 )
 
@@ -36,13 +38,30 @@ func (c *Cluster) WriteSubscribe(streamPath string) {
 	c.WriteString(streamPath)
 	c.Flush()
 }
-
-func (c *Cluster) WriteUnSubscribe(streamPath string) {
+func (c *Cluster) WritePulse() {
+	c.Lock()
+	c.WriteByte(MSG_PULSE)
+	c.Flush()
+	c.Unlock()
+}
+func (c *Cluster) WriteReport() {
 	c.Lock()
 	defer c.Unlock()
+	if b, err := json.Marshal(Summary); err == nil {
+		data := make([]byte, len(b)+2)
+		data[0] = MSG_SUMMARY
+		copy(data[1:], b)
+		data[len(data)-1] = 0
+		_, err = c.Write(data)
+		c.Flush()
+	}
+}
+func (c *Cluster) WriteUnSubscribe(streamPath string) {
+	c.Lock()
 	c.WriteByte(MSG_UNSUBSCRIBE)
 	c.WriteString(streamPath)
 	c.Flush()
+	c.Unlock()
 }
 func (c *Cluster) ReadVideoTrack() {
 	if streamPath := c.ReadString(); streamPath != "" {
@@ -120,14 +139,11 @@ func (c *Cluster) ReadAudioPack() {
 		}
 	}
 }
-func (c *Cluster) orderReport(start bool) {
+func (c *Cluster) WriteSummary(flag byte) {
 	c.Lock()
-	defer c.Unlock()
-	b := []byte{MSG_SUMMARY, 0}
-	if start {
-		b[1] = 1
-	}
-	c.Write(b)
+	c.Write([]byte{MSG_SUMMARY, flag})
+	c.Flush()
+	c.Unlock()
 }
 func (c *Cluster) WriteUint32(num uint32) {
 	c.Write(BigEndian.ToUint32(num))
